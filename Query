@@ -1,0 +1,91 @@
+WITH last_month_transactions AS (
+  SELECT 
+    transaction_id
+  FROM `flex-insights-prod.tables.Agreements_balances_historical` 
+  WHERE transaction_category IN ('payment', 'payment-reversal')
+  AND DATE(transaction_date) < '2024-07-01'
+  AND collector_username NOT IN ('FLEX','fxadmin')
+), isPromise AS (
+    SELECT 
+      t._id AS transaction_id,
+      ptp.agent_name, 
+      ah.display_name,
+      ah.site,
+      ah.department
+    FROM `flex-insights-prod.mongo_billing.transactions` t
+    LEFT JOIN `flex-insights-prod.mongo_billing.promise_to_pay` ptp ON ptp._id = t.promise_to_pay_id
+    LEFT JOIN `flex-insights-prod.livevox.agent_history` ah ON ah.Email = ptp.agent_name 
+    WHERE ptp._id IS NOT NULL 
+
+    UNION ALL
+
+    SELECT 
+      ptp.transaction_id,
+      ptp.agent_name, 
+      ah.display_name,
+      ah.site,
+      ah.department
+    FROM `flex-insights-prod.mongo_billing.promise_to_pay` ptp 
+    LEFT JOIN `flex-insights-prod.livevox.agent_history` ah ON ah.Email = ptp.agent_name 
+    WHERE LENGTH(agreement_id) > 26 
+    AND ptp.transaction_id IS NOT NULL
+), isFee AS (
+  SELECT 
+  _id AS transaction_id
+  FROM `flex-insights-prod.mongo_billing.transactions` 
+  WHERE type IN ('nsf-fee-payment', 'late-fee-payment')
+)
+SELECT  
+  abh.user_id,
+  abh.agreement_id,
+  abh.transaction_id,
+  REPLACE(abh.transaction_id, '-reversed', '') AS transacion_id_no_reversed,
+  DATE(abh.transaction_date) AS transaction_date,
+  abh.transaction_category,
+  abh.status AS transaction_status,
+  CASE
+    WHEN ptp.transaction_id IS NULL THEN "Direct"
+    ELSE "PTP"
+  END AS collection_type,
+  abh.transaction_amount, 
+  abh.transaction_amount_no_tax,
+  abh.deliquency_bucket_beginning_of_trans_date,
+  abh.collector_username,
+  ah.display_name,
+  ah.site,
+  ah.department,
+  payment_type,
+  CASE 
+    WHEN ptp.transaction_id IS NULL THEN 0
+    ELSE 1
+  END AS isPromise,
+  CASE 
+    WHEN f.transaction_id IS NULL THEN 0
+    ELSE 1
+  END AS isFee,
+  ptp.agent_name AS agent_ptp_email,
+  ptp.display_name AS ptp_display_name,
+  ptp.SITE AS ptp_site,
+  ptp.department AS ptp_department,
+  CASE 
+    WHEN abh.collector_username IN ('svc_autobots_login', 'Wimpy Bot') THEN ptp.display_name
+    ELSE ah.display_name 
+  END AS final_collector,
+  CASE 
+    WHEN abh.collector_username IN ('svc_autobots_login', 'Wimpy Bot') THEN ptp.SITE
+    ELSE ah.site 
+  END AS final_site,
+  CASE 
+    WHEN abh.collector_username IN ('svc_autobots_login', 'Wimpy Bot') THEN ptp.department
+    ELSE ah.department 
+  END AS final_department
+FROM `flex-insights-prod.tables.Agreements_balances_historical` abh
+LEFT JOIN `flex-insights-prod.livevox.agent_history` ah ON ah.collector_username = abh.collector_username 
+LEFT JOIN last_month_transactions lm ON lm.transaction_id = REPLACE(abh.transaction_id, '-reversed', '')
+LEFT JOIN isPromise ptp ON ptp.transaction_id = REPLACE(abh.transaction_id, '-reversed', '')
+LEFT JOIN isFee f ON f.transaction_id = REPLACE(abh.transaction_id, '-reversed', '')
+WHERE abh.transaction_category IN ('payment', 'payment-reversal')
+AND DATE(abh.transaction_date) BETWEEN '2024-07-01' AND '2024-07-08'
+AND abh.collector_username NOT IN ('FLEX','fxadmin')
+AND lm.transaction_id IS NULL
+AND abh.transaction_amount NOT IN (3.99, -3.99)
